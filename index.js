@@ -6,7 +6,7 @@ import loginRouter from "./routes/auth.js";
 import protectedRouter from "./routes/protected.js";
 import uploadRouter from "./routes/upload.js";
 
-import methodOverride from "./middleware/methodOverride.js";
+import methodOverride from "./middleware/methodeOverride.js";
 import requireJsonBody from "./middleware/requireJsonBody.js";
 
 try {
@@ -32,10 +32,18 @@ try {
     // CORS middleware
     app.use((req, res, next) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-        next();
+
+        // alleen preflight krijgt allow-methods/allow-headers
+        if (req.method === "OPTIONS") {
+            res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
+            res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+            return res.sendStatus(204);
+        }
+
+        return next();
     });
+
+    app.use(acceptJsonOnly);
 
 
     // POST overload (method override)
