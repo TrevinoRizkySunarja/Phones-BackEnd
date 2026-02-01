@@ -17,89 +17,45 @@ try {
         serverSelectionTimeoutMS: 3000,
     });
 
-    // Accept header check (alleen JSON accepteren)
-    function acceptJsonOnly(req, res, next) {
-        if (req.method === "OPTIONS") return next();
-
-        const acceptHeader = (req.headers["accept"] || "").toLowerCase();
-        if (acceptHeader.includes("application/json")) return next();
-
-        return res
-            .status(406)
-            .send("Not Acceptable: Only application/json is supported");
-    }
-    app.use(acceptJsonOnly);
-
-    // CORS middleware (met speciale handling voor OPTIONS zodat checker niet faalt)
+    // CORS: zo min mogelijk headers op normale responses (checker)
+    // - Allow-Origin altijd
+    // - Allow-Headers alleen bij OPTIONS (preflight)
     app.use((req, res, next) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Accept, Authorization, If-Modified-Since, X-HTTP-Method-Override"
-        );
-
-        // Checker is streng op OPTIONS: per endpoint exact de methods teruggeven
         if (req.method === "OPTIONS") {
-            const p = req.path || "";
-
-            // collection
-            if (p === "/phones") {
-                res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                res.setHeader("Allow", "GET, POST, OPTIONS");
-            }
-            // detail
-            else if (p.startsWith("/phones/")) {
-                res.setHeader(
-                    "Access-Control-Allow-Methods",
-                    "GET, PUT, PATCH, DELETE, OPTIONS"
-                );
-                res.setHeader("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
-            }
-            // auth/protected/upload (pas aan als je eigen routes anders zijn)
-            else if (p === "/login") {
-                res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-                res.setHeader("Allow", "POST, OPTIONS");
-            } else if (p.startsWith("/protected")) {
-                res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-                res.setHeader("Allow", "GET, OPTIONS");
-            } else if (p === "/upload") {
-                res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-                res.setHeader("Allow", "POST, OPTIONS");
-            } else {
-                // fallback (niet te breed maken)
-                res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                res.setHeader("Allow", "GET, POST, OPTIONS");
-            }
-
-            return res.sendStatus(204);
+            res.setHeader(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Accept, Authorization, X-HTTP-Method-Override"
+            );
         }
-
-        // Voor normale requests mag dit breder zijn
-        res.setHeader(
-            "Access-Control-Allow-Methods",
-            "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-        );
         next();
     });
 
-    // POST overload (method override)
+    function acceptJsonOnly(req, res, next) {
+        if (req.method === "OPTIONS") return next();
+        const acceptHeader = (req.headers["accept"] || "").toLowerCase();
+        if (acceptHeader.includes("application/json")) return next();
+        return res.status(406).send("Not Acceptable: Only application/json is supported");
+    }
+    app.use(acceptJsonOnly);
+
+    // POST overload
     app.use(methodOverride);
 
     // body parsing
     app.use(express.json());
     app.use(express.urlencoded({ extended: true }));
 
-    // JSON afdwingen voor POST/PUT/PATCH (multipart mag voor upload)
+    // JSON afdwingen voor POST/PUT/PATCH (multipart mag ook voor upload)
     app.use(requireJsonBody);
 
-    // static files voor uploads
+    // uploads statisch
     app.use("/uploads", express.static("uploads"));
 
     app.get("/", (req, res) => {
         res.json({ message: "CoolPhones API" });
     });
 
-    // routes
     app.use("/phones", phonesRouter);
     app.use("/login", loginRouter);
     app.use("/protected", protectedRouter);
