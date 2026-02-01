@@ -1,5 +1,5 @@
-// routes/phones.js
 import express from "express";
+import mongoose from "mongoose";
 import Phone from "../models/Phones.js";
 import { faker } from "@faker-js/faker";
 
@@ -16,174 +16,109 @@ function validateFullBody(body) {
     return null;
 }
 
-function baseUrl(req) {
-    // Gebruik request host zodat je server IP/host klopt in checker
-    return `${req.protocol}://${req.get("host")}`;
+function baseUrl() {
+    return `${process.env.APPLICATION_URL}:${process.env.EXPRESS_PORT}`;
 }
 
-function collectionHref(req) {
-    return `${baseUrl(req)}/phones`;
+function collectionUrl() {
+    return `${baseUrl()}/phones`;
 }
 
-function buildSelfHref(req) {
-    const base = collectionHref(req);
-    const qs = new URLSearchParams();
-
-    // voeg alle query params toe zoals ze in request staan
-    for (const [k, v] of Object.entries(req.query)) {
-        if (typeof v === "undefined") continue;
-        if (v === "") continue;
-        qs.set(k, String(v));
-    }
-
-    const s = qs.toString();
-    return s ? `${base}?${s}` : base;
+function detailUrl(id) {
+    return `${baseUrl()}/phones/${id}`;
 }
 
-function phoneLinks(req, id) {
-    const base = baseUrl(req);
+function buildItemLinks(id) {
     return {
-        self: { href: `${base}/phones/${id}` },
-        collection: { href: `${base}/phones` },
+        self: { href: detailUrl(id) },
+        collection: { href: collectionUrl() }
     };
 }
 
-function mapCollectionItem(req, doc) {
-    return {
-        id: doc.id,
-        title: doc.title,
-        brand: doc.brand,
-        _links: phoneLinks(req, doc.id),
-    };
-}
-
-function buildFilter(req) {
-    const q = (req.query.q || "").toString().trim();
-    const brand = (req.query.brand || "").toString().trim();
-
-    const filter = {};
-    if (brand) filter.brand = new RegExp("^" + brand + "$", "i");
-    if (q) {
-        filter.$or = [
-            { title: new RegExp(q, "i") },
-            { brand: new RegExp(q, "i") },
-            { description: new RegExp(q, "i") },
-        ];
-    }
-    return filter;
-}
-
-/* -----------------------------
-   OPTIONS collection
-   Checker verwacht vaak 204
------------------------------- */
+// OPTIONS collection (Allow header + CORS methods voor checker)
 router.options("/", (req, res) => {
     res.set("Allow", "GET, POST, OPTIONS");
     res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     return res.sendStatus(204);
 });
 
-/* -----------------------------
-   SEED (moet vóór /:id)
-   minimaal 5 items
------------------------------- */
-router.post("/seed", async (req, res) => {
-    await Phone.deleteMany({});
-
-    const raw = req.body?.amount;
-    const parsed = parseInt(raw, 10);
-    const safeAmount = Number.isFinite(parsed) ? Math.max(parsed, 5) : 10;
-
-    for (let i = 0; i < safeAmount; i++) {
-        await Phone.create({
-            title: faker.commerce.productName(),
-            brand: faker.company.name(),
-            description: faker.lorem.paragraph(),
-            imageUrl: faker.image.url(),
-            reviews: faker.lorem.paragraphs(faker.number.int({ min: 1, max: 2 })),
-            hasBookmark: false,
-            date: new Date(),
-        });
-    }
-
-    return res.sendStatus(201);
-});
-
-/* -----------------------------
-   GET collection
-   - Zonder page & zonder limit: alles tonen (geen pagination)
-   - Met page of limit: pagination object verplicht (checker)
-   Supports:
-   ?page=1&limit=10&q=iphone&brand=Apple
------------------------------- */
+// GET collection (pagination + filter/search + links)
 router.get("/", async (req, res) => {
-    const filter = buildFilter(req);
+    const q = (req.query.q || "").toString().trim();
+    const brand = (req.query.brand || "").toString().trim();
 
-    const hasPage = typeof req.query.page !== "undefined" && req.query.page !== "";
-    const hasLimit = typeof req.query.limit !== "undefined" && req.query.limit !== "";
+    // pagination detectie
+    const pageRaw = req.query.page;
+    const limitRaw = req.query.limit;
 
-    const selfHref = buildSelfHref(req);
-    const collHref = collectionHref(req);
+    const pageParsed = parseInt(pageRaw, 10);
+    const limitParsed = parseInt(limitRaw, 10);
 
-    // "normale" collectie (zonder pagination params): alles tonen
-    if (!hasPage && !hasLimit) {
-        const docs = await Phone.find(filter).select("title brand");
-        const items = docs.map((d) => mapCollectionItem(req, d));
+    const hasPagination =
+        (typeof pageRaw !== "undefined" && pageRaw !== "") ||
+        (typeof limitRaw !== "undefined" && limitRaw !== "");
 
-        return res.json({
-            items,
-            _links: {
-                self: { href: selfHref },        // inclusief q/brand als die aanwezig zijn
-                collection: { href: collHref },  // altijd /phones
-            },
-        });
+    const safePage = Number.isFinite(pageParsed) && pageParsed > 0 ? pageParsed : 1;
+
+    // “zonder limit moet alles getoond worden” => limit = null
+    const safeLimit =
+        Number.isFinite(limitParsed) && limitParsed > 0 ? limitParsed : null;
+
+    // filter/search
+    const filter = {};
+    if (brand) filter.brand = new RegExp("^" + brand + "$", "i");
+
+    if (q) {
+        filter.$or = [
+            { title: new RegExp(q, "i") },
+            { brand: new RegExp(q, "i") },
+            { description: new RegExp(q, "i") }
+        ];
     }
 
-    // pagination mode (checker): page kan bestaan zonder limit
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const totalItems = await Phone.countDocuments(filter);
 
-    // als limit ontbreekt, gebruik een default (checker verwacht pagination object)
-    const limit = Math.max(parseInt(req.query.limit || "10", 10), 1);
-
-    const skip = (page - 1) * limit;
-
-    const [docs, total] = await Promise.all([
-        Phone.find(filter).select("title brand").skip(skip).limit(limit),
-        Phone.countDocuments(filter),
-    ]);
-
-    const items = docs.map((d) => mapCollectionItem(req, d));
-    const pages = Math.ceil(total / limit);
-
-    // self link moet exact huidige request weerspiegelen.
-    // maar zorg dat page/limit er sowieso in zitten in pagination-mode.
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(req.query)) {
-        if (typeof v === "undefined" || v === "") continue;
-        qs.set(k, String(v));
+    let query = Phone.find(filter).select("title brand");
+    if (hasPagination && safeLimit) {
+        query = query.skip((safePage - 1) * safeLimit).limit(safeLimit);
     }
-    qs.set("page", String(page));
-    qs.set("limit", String(limit));
-    const selfWithPaging = `${collHref}?${qs.toString()}`;
 
-    return res.json({
+    const docs = await query;
+
+    const items = docs.map((d) => ({
+        id: d.id,
+        title: d.title,
+        brand: d.brand,
+        _links: buildItemLinks(d.id)
+    }));
+
+    const response = {
         items,
-        pagination: {
-            page,
-            limit,
-            total,
-            pages,
-        },
         _links: {
-            self: { href: selfWithPaging },
-            collection: { href: collHref },
-        },
-    });
+            self: {
+                href: hasPagination
+                    ? `${collectionUrl()}?page=${safePage}${safeLimit ? `&limit=${safeLimit}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${brand ? `&brand=${encodeURIComponent(brand)}` : ""}`
+                    : collectionUrl()
+            },
+            collection: { href: collectionUrl() }
+        }
+    };
+
+    // checker verwacht pagination object als pagination aan staat (page/limit aanwezig)
+    if (hasPagination) {
+        response.pagination = {
+            page: safePage,
+            limit: safeLimit,                 // null als je geen limit meegeeft
+            totalItems,
+            totalPages: safeLimit ? Math.ceil(totalItems / safeLimit) : 1,
+            itemCount: items.length
+        };
+    }
+
+    return res.json(response);
 });
 
-/* -----------------------------
-   POST create
------------------------------- */
+// POST create item (201)
 router.post("/", async (req, res) => {
     const error = validateFullBody(req.body);
     if (error) return res.status(400).json({ error });
@@ -193,38 +128,56 @@ router.post("/", async (req, res) => {
         brand: req.body.brand.trim(),
         description: req.body.description.trim(),
         imageUrl: nonEmptyString(req.body.imageUrl) ? req.body.imageUrl.trim() : faker.image.url(),
-        reviews: nonEmptyString(req.body.reviews) ? req.body.reviews.trim() : "",
+        reviews: nonEmptyString(req.body.reviews) ? req.body.reviews.trim() : faker.lorem.paragraphs(2),
         hasBookmark: typeof req.body.hasBookmark === "boolean" ? req.body.hasBookmark : false,
-        date: new Date(),
+        date: new Date()
     });
 
-    return res.status(201).json({
-        id: created.id,
-        title: created.title,
-        brand: created.brand,
-        description: created.description,
-        imageUrl: created.imageUrl,
-        reviews: created.reviews,
-        hasBookmark: created.hasBookmark,
-        date: created.date,
-        _links: phoneLinks(req, created.id),
-    });
+    const out = created.toObject({ versionKey: false });
+    out.id = created.id;
+    delete out._id;
+    out._links = buildItemLinks(created.id);
+
+    return res.status(201).json(out);
 });
 
-/* -----------------------------
-   OPTIONS detail
------------------------------- */
+// POST seed (min 5 items voor checker)
+router.post("/seed", async (req, res) => {
+    await Phone.deleteMany({});
+
+    const amountRaw = req.body?.amount;
+    const parsed = parseInt(amountRaw, 10);
+    const safeAmount = Number.isFinite(parsed) ? Math.max(parsed, 5) : 10;
+
+    for (let i = 0; i < safeAmount; i++) {
+        await Phone.create({
+            title: faker.commerce.productName(),
+            brand: faker.company.name(),
+            description: faker.lorem.paragraph(),
+            imageUrl: faker.image.url(),
+            reviews: faker.lorem.paragraphs(2),
+            hasBookmark: false,
+            date: new Date()
+        });
+    }
+
+    return res.sendStatus(201);
+});
+
+// OPTIONS detail (Allow + CORS methods voor checker)
 router.options("/:id", (req, res) => {
     res.set("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
     res.set("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, OPTIONS");
     return res.sendStatus(204);
 });
 
-/* -----------------------------
-   GET detail + If-Modified-Since
------------------------------- */
+// GET detail + If-Modified-Since
 router.get("/:id", async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({ error: "Invalid id format" });
+        }
+
         const phone = await Phone.findById(req.params.id);
         if (!phone) return res.status(404).json({ error: "Phone not found" });
 
@@ -233,34 +186,31 @@ router.get("/:id", async (req, res) => {
 
         if (ims) {
             const imsDate = new Date(ims);
-            if (!Number.isNaN(imsDate.getTime()) && last <= imsDate) {
+            if (!isNaN(imsDate.getTime()) && last <= imsDate) {
                 return res.status(304).send();
             }
         }
 
         res.setHeader("Last-Modified", last.toUTCString());
 
-        return res.json({
-            id: phone.id,
-            title: phone.title,
-            brand: phone.brand,
-            description: phone.description,
-            imageUrl: phone.imageUrl,
-            reviews: phone.reviews,
-            hasBookmark: phone.hasBookmark,
-            date: phone.date,
-            _links: phoneLinks(req, phone.id),
-        });
+        const out = phone.toObject({ versionKey: false });
+        out.id = phone.id;
+        delete out._id;
+        out._links = buildItemLinks(phone.id);
+
+        return res.json(out);
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-/* -----------------------------
-   PUT (full replace)
------------------------------- */
+// PUT detail (volledig vervangen)
 router.put("/:id", async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({ error: "Invalid id format" });
+        }
+
         const error = validateFullBody(req.body);
         if (error) return res.status(400).json({ error });
 
@@ -273,34 +223,31 @@ router.put("/:id", async (req, res) => {
                 ...(nonEmptyString(req.body.imageUrl) ? { imageUrl: req.body.imageUrl.trim() } : {}),
                 ...(nonEmptyString(req.body.reviews) ? { reviews: req.body.reviews.trim() } : {}),
                 ...(typeof req.body.hasBookmark === "boolean" ? { hasBookmark: req.body.hasBookmark } : {}),
-                date: new Date(),
+                date: new Date()
             },
             { new: true }
         );
 
         if (!updated) return res.status(404).json({ error: "Phone not found" });
 
-        return res.json({
-            id: updated.id,
-            title: updated.title,
-            brand: updated.brand,
-            description: updated.description,
-            imageUrl: updated.imageUrl,
-            reviews: updated.reviews,
-            hasBookmark: updated.hasBookmark,
-            date: updated.date,
-            _links: phoneLinks(req, updated.id),
-        });
+        const out = updated.toObject({ versionKey: false });
+        out.id = updated.id;
+        delete out._id;
+        out._links = buildItemLinks(updated.id);
+
+        return res.json(out);
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-/* -----------------------------
-   PATCH (partial)
------------------------------- */
+// PATCH detail (deels aanpassen)
 router.patch("/:id", async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({ error: "Invalid id format" });
+        }
+
         const update = {};
 
         if ("title" in req.body) {
@@ -319,6 +266,10 @@ router.patch("/:id", async (req, res) => {
             if (!nonEmptyString(req.body.imageUrl)) return res.status(400).json({ error: "imageUrl must be non-empty string" });
             update.imageUrl = req.body.imageUrl.trim();
         }
+        if ("reviews" in req.body) {
+            if (!nonEmptyString(req.body.reviews)) return res.status(400).json({ error: "reviews must be non-empty string" });
+            update.reviews = req.body.reviews.trim();
+        }
         if ("hasBookmark" in req.body) {
             if (typeof req.body.hasBookmark !== "boolean") return res.status(400).json({ error: "hasBookmark must be boolean" });
             update.hasBookmark = req.body.hasBookmark;
@@ -333,29 +284,27 @@ router.patch("/:id", async (req, res) => {
         const updated = await Phone.findByIdAndUpdate(req.params.id, update, { new: true });
         if (!updated) return res.status(404).json({ error: "Phone not found" });
 
-        return res.json({
-            id: updated.id,
-            title: updated.title,
-            brand: updated.brand,
-            description: updated.description,
-            imageUrl: updated.imageUrl,
-            reviews: updated.reviews,
-            hasBookmark: updated.hasBookmark,
-            date: updated.date,
-            _links: phoneLinks(req, updated.id),
-        });
+        const out = updated.toObject({ versionKey: false });
+        out.id = updated.id;
+        delete out._id;
+        out._links = buildItemLinks(updated.id);
+
+        return res.json(out);
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-/* -----------------------------
-   DELETE
------------------------------- */
+// DELETE detail
 router.delete("/:id", async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({ error: "Invalid id format" });
+        }
+
         const deleted = await Phone.findByIdAndDelete(req.params.id);
         if (!deleted) return res.status(404).json({ error: "Phone not found" });
+
         return res.sendStatus(204);
     } catch {
         return res.status(400).json({ error: "Invalid id format" });

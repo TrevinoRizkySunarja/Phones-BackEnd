@@ -16,35 +16,26 @@ try {
         serverSelectionTimeoutMS: 3000
     });
 
+    // Alleen JSON responses toelaten (checker/Accept)
     function acceptJsonOnly(req, res, next) {
         if (req.method === "OPTIONS") return next();
 
         const acceptHeader = (req.headers["accept"] || "").toLowerCase();
-        if (acceptHeader.includes("application/json")) {
-            next();
-        } else {
-            res.status(406).send("Not Acceptable: Only application/json is supported");
-        }
-    }
+        if (acceptHeader.includes("application/json")) return next();
 
+        return res.status(406).send("Not Acceptable: Only application/json is supported");
+    }
     app.use(acceptJsonOnly);
 
-    // CORS middleware
+    // CORS: alleen Origin + Headers globaal. Methods per route via router.options()
     app.use((req, res, next) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
 
-        // alleen preflight krijgt allow-methods/allow-headers
-        if (req.method === "OPTIONS") {
-            res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
-            res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-            return res.sendStatus(204);
-        }
-
+        // Preflight laten doorlopen naar route-level OPTIONS (voor juiste Allow + methods)
+        if (req.method === "OPTIONS") return next();
         return next();
     });
-
-    app.use(acceptJsonOnly);
-
 
     // POST overload (method override)
     app.use(methodOverride);
@@ -65,9 +56,9 @@ try {
 
     // routes
     app.use("/phones", phonesRouter);
-    app.use("/login", loginRouter);         // POST /login (Basic -> JWT)
-    app.use("/protected", protectedRouter); // GET /protected/ping (Bearer JWT)
-    app.use("/upload", uploadRouter);       // POST /upload (multipart)
+    app.use("/login", loginRouter);
+    app.use("/protected", protectedRouter);
+    app.use("/upload", uploadRouter);
 
     app.listen(process.env.EXPRESS_PORT, "0.0.0.0", () => {
         console.log(`Server is running on port ${process.env.EXPRESS_PORT}`);
