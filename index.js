@@ -31,11 +31,12 @@ try {
 
     // CORS middleware
     app.use((req, res, next) => {
-        res.header("Access-Control-Allow-Origin", "*");
-        res.header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, If-Modified-Since, X-HTTP-Method-Override");
-        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
         next();
     });
+
 
     // POST overload (method override)
     app.use(methodOverride);
