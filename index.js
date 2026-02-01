@@ -1,11 +1,19 @@
-import express from 'express';
+import express from "express";
 import mongoose from "mongoose";
-import phonesRouter from './routes/phones.js';
+
+import phonesRouter from "./routes/phones.js";
+import loginRouter from "./routes/auth.js";
+import protectedRouter from "./routes/protected.js";
+import uploadRouter from "./routes/upload.js";
+
+import methodOverride from "./middleware/methodOverride.js";
+import requireJsonBody from "./middleware/requireJsonBody.js";
 
 try {
     const app = express();
+
     await mongoose.connect(`mongodb://127.0.0.1:27017/${process.env.DB_NAME}`, {
-        serverSelectionTimeoutMS:3000
+        serverSelectionTimeoutMS: 3000
     });
 
     function acceptJsonOnly(req, res, next) {
@@ -24,22 +32,35 @@ try {
     // CORS middleware
     app.use((req, res, next) => {
         res.header("Access-Control-Allow-Origin", "*");
-        res.header("Access-Control-Allow-Headers", "Content-Type, Accept");
-        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        res.header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, If-Modified-Since, X-HTTP-Method-Override");
+        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
         next();
     });
 
-    // middleware
-    app.use(express.json());
-    app.use(express.urlencoded({extended: true}));
+    // POST overload (method override)
+    app.use(methodOverride);
 
-    app.get('/', (req, res) => {
-        res.json({ message: 'Hello World' });
+    // body parsing
+    app.use(express.json());
+    app.use(express.urlencoded({ extended: true }));
+
+    // JSON afdwingen voor POST/PUT/PATCH (multipart mag ook voor upload)
+    app.use(requireJsonBody);
+
+    // static files voor uploads
+    app.use("/uploads", express.static("uploads"));
+
+    app.get("/", (req, res) => {
+        res.json({ message: "CoolPhones API" });
     });
 
-    app.use('/phones', phonesRouter);
+    // routes
+    app.use("/phones", phonesRouter);
+    app.use("/login", loginRouter);         // POST /login (Basic -> JWT)
+    app.use("/protected", protectedRouter); // GET /protected/ping (Bearer JWT)
+    app.use("/upload", uploadRouter);       // POST /upload (multipart)
 
-    app.listen(process.env.EXPRESS_PORT, () => {
+    app.listen(process.env.EXPRESS_PORT, "0.0.0.0", () => {
         console.log(`Server is running on port ${process.env.EXPRESS_PORT}`);
     });
 
