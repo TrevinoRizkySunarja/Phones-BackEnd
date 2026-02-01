@@ -16,58 +16,42 @@ function validateFullBody(body) {
     return null;
 }
 
-function baseUrl() {
-    return `${process.env.APPLICATION_URL}:${process.env.EXPRESS_PORT}`;
+function baseUrl(req) {
+    // checker verwacht vaak exact http(s)://host (ipv env)
+    return `${req.protocol}://${req.get("host")}`;
 }
 
-function collectionUrl() {
-    return `${baseUrl()}/phones`;
+function collectionHref(req, extra = "") {
+    return `${baseUrl(req)}/phones${extra}`;
 }
 
-function detailUrl(id) {
-    return `${baseUrl()}/phones/${id}`;
+function itemHref(req, id) {
+    return `${baseUrl(req)}/phones/${id}`;
 }
 
-function buildItemLinks(id) {
-    return {
-        self: { href: detailUrl(id) },
-        collection: { href: collectionUrl() }
-    };
-}
-
-// OPTIONS collection (Allow header + CORS methods voor checker)
+// =======================
+// OPTIONS - COLLECTION
+// =======================
 router.options("/", (req, res) => {
-    res.set("Allow", "GET, POST, OPTIONS");
-    res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-HTTP-Method-Override");
     return res.sendStatus(204);
 });
 
-// GET collection (pagination + filter/search + links)
+// =======================
+// GET COLLECTION
+// pagination + filter/search
+// - zonder limit => alle items (geen default limit)
+// - met limit => pagination object vereist
+// =======================
 router.get("/", async (req, res) => {
     const q = (req.query.q || "").toString().trim();
     const brand = (req.query.brand || "").toString().trim();
 
-    // pagination detectie
-    const pageRaw = req.query.page;
-    const limitRaw = req.query.limit;
-
-    const pageParsed = parseInt(pageRaw, 10);
-    const limitParsed = parseInt(limitRaw, 10);
-
-    const hasPagination =
-        (typeof pageRaw !== "undefined" && pageRaw !== "") ||
-        (typeof limitRaw !== "undefined" && limitRaw !== "");
-
-    const safePage = Number.isFinite(pageParsed) && pageParsed > 0 ? pageParsed : 1;
-
-    // “zonder limit moet alles getoond worden” => limit = null
-    const safeLimit =
-        Number.isFinite(limitParsed) && limitParsed > 0 ? limitParsed : null;
-
-    // filter/search
     const filter = {};
     if (brand) filter.brand = new RegExp("^" + brand + "$", "i");
-
     if (q) {
         filter.$or = [
             { title: new RegExp(q, "i") },
@@ -76,49 +60,99 @@ router.get("/", async (req, res) => {
         ];
     }
 
-    const totalItems = await Phone.countDocuments(filter);
+    const hasLimit = typeof req.query.limit !== "undefined" && req.query.limit !== "";
 
-    let query = Phone.find(filter).select("title brand");
-    if (hasPagination && safeLimit) {
-        query = query.skip((safePage - 1) * safeLimit).limit(safeLimit);
+    // GEEN LIMIT => alles tonen
+    if (!hasLimit) {
+        const items = await Phone.find(filter).select("title brand");
+        const mapped = items.map(p => ({
+            id: p.id,
+            title: p.title,
+            brand: p.brand,
+            _links: {
+                self: { href: itemHref(req, p.id) },
+                collection: { href: collectionHref(req) }
+            }
+        }));
+
+        return res.json({
+            items: mapped,
+            _links: {
+                self: { href: collectionHref(req) },
+                collection: { href: collectionHref(req) }
+            }
+        });
     }
 
-    const docs = await query;
+    // MET LIMIT => pagination object
+    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const limit = Math.max(parseInt(req.query.limit || "10", 10), 1);
+    const skip = (page - 1) * limit;
 
-    const items = docs.map((d) => ({
-        id: d.id,
-        title: d.title,
-        brand: d.brand,
-        _links: buildItemLinks(d.id)
+    const [docs, total] = await Promise.all([
+        Phone.find(filter).select("title brand").skip(skip).limit(limit),
+        Phone.countDocuments(filter)
+    ]);
+
+    const pages = Math.max(Math.ceil(total / limit), 1);
+
+    const items = docs.map(p => ({
+        id: p.id,
+        title: p.title,
+        brand: p.brand,
+        _links: {
+            self: { href: itemHref(req, p.id) },
+            collection: { href: collectionHref(req) }
+        }
     }));
 
-    const response = {
+    // checker wil vaak: pagination { page, limit, pages, total, count }
+    const count = items.length;
+
+    const selfHref = collectionHref(req, `?page=${page}&limit=${limit}`) +
+        (q ? `&q=${encodeURIComponent(q)}` : "") +
+        (brand ? `&brand=${encodeURIComponent(brand)}` : "");
+
+    const collectionLink = collectionHref(req) +
+        (q || brand
+            ? `?${q ? `q=${encodeURIComponent(q)}` : ""}${q && brand ? "&" : ""}${brand ? `brand=${encodeURIComponent(brand)}` : ""}`
+            : "");
+
+    const nextHref =
+        page < pages
+            ? collectionHref(req, `?page=${page + 1}&limit=${limit}`) +
+            (q ? `&q=${encodeURIComponent(q)}` : "") +
+            (brand ? `&brand=${encodeURIComponent(brand)}` : "")
+            : null;
+
+    const prevHref =
+        page > 1
+            ? collectionHref(req, `?page=${page - 1}&limit=${limit}`) +
+            (q ? `&q=${encodeURIComponent(q)}` : "") +
+            (brand ? `&brand=${encodeURIComponent(brand)}` : "")
+            : null;
+
+    return res.json({
         items,
+        pagination: {
+            page,
+            limit,
+            pages,
+            total,
+            count
+        },
         _links: {
-            self: {
-                href: hasPagination
-                    ? `${collectionUrl()}?page=${safePage}${safeLimit ? `&limit=${safeLimit}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${brand ? `&brand=${encodeURIComponent(brand)}` : ""}`
-                    : collectionUrl()
-            },
-            collection: { href: collectionUrl() }
+            self: { href: selfHref },
+            collection: { href: collectionLink },
+            ...(nextHref ? { next: { href: nextHref } } : {}),
+            ...(prevHref ? { prev: { href: prevHref } } : {})
         }
-    };
-
-    // checker verwacht pagination object als pagination aan staat (page/limit aanwezig)
-    if (hasPagination) {
-        response.pagination = {
-            page: safePage,
-            limit: safeLimit,                 // null als je geen limit meegeeft
-            totalItems,
-            totalPages: safeLimit ? Math.ceil(totalItems / safeLimit) : 1,
-            itemCount: items.length
-        };
-    }
-
-    return res.json(response);
+    });
 });
 
-// POST create item (201)
+// =======================
+// POST CREATE
+// =======================
 router.post("/", async (req, res) => {
     const error = validateFullBody(req.body);
     if (error) return res.status(400).json({ error });
@@ -128,20 +162,21 @@ router.post("/", async (req, res) => {
         brand: req.body.brand.trim(),
         description: req.body.description.trim(),
         imageUrl: nonEmptyString(req.body.imageUrl) ? req.body.imageUrl.trim() : faker.image.url(),
-        reviews: nonEmptyString(req.body.reviews) ? req.body.reviews.trim() : faker.lorem.paragraphs(2),
-        hasBookmark: typeof req.body.hasBookmark === "boolean" ? req.body.hasBookmark : false,
-        date: new Date()
+        reviews: nonEmptyString(req.body.reviews) ? req.body.reviews.trim() : undefined
     });
 
-    const out = created.toObject({ versionKey: false });
-    out.id = created.id;
-    delete out._id;
-    out._links = buildItemLinks(created.id);
-
-    return res.status(201).json(out);
+    return res.status(201).json({
+        ...created.toJSON(),
+        _links: {
+            self: { href: itemHref(req, created.id) },
+            collection: { href: collectionHref(req) }
+        }
+    });
 });
 
-// POST seed (min 5 items voor checker)
+// =======================
+// SEED
+// =======================
 router.post("/seed", async (req, res) => {
     await Phone.deleteMany({});
 
@@ -154,24 +189,27 @@ router.post("/seed", async (req, res) => {
             title: faker.commerce.productName(),
             brand: faker.company.name(),
             description: faker.lorem.paragraph(),
-            imageUrl: faker.image.url(),
-            reviews: faker.lorem.paragraphs(2),
-            hasBookmark: false,
-            date: new Date()
+            imageUrl: faker.image.url()
         });
     }
 
     return res.sendStatus(201);
 });
 
-// OPTIONS detail (Allow + CORS methods voor checker)
+// =======================
+// OPTIONS - DETAIL
+// =======================
 router.options("/:id", (req, res) => {
-    res.set("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
-    res.set("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-HTTP-Method-Override");
     return res.sendStatus(204);
 });
 
-// GET detail + If-Modified-Since
+// =======================
+// GET DETAIL + If-Modified-Since
+// =======================
 router.get("/:id", async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
@@ -187,24 +225,27 @@ router.get("/:id", async (req, res) => {
         if (ims) {
             const imsDate = new Date(ims);
             if (!isNaN(imsDate.getTime()) && last <= imsDate) {
-                return res.status(304).send();
+                return res.sendStatus(304);
             }
         }
 
         res.setHeader("Last-Modified", last.toUTCString());
 
-        const out = phone.toObject({ versionKey: false });
-        out.id = phone.id;
-        delete out._id;
-        out._links = buildItemLinks(phone.id);
-
-        return res.json(out);
+        return res.json({
+            ...phone.toJSON(),
+            _links: {
+                self: { href: itemHref(req, phone.id) },
+                collection: { href: collectionHref(req) }
+            }
+        });
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-// PUT detail (volledig vervangen)
+// =======================
+// PUT DETAIL (replace)
+// =======================
 router.put("/:id", async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
@@ -222,7 +263,6 @@ router.put("/:id", async (req, res) => {
                 description: req.body.description.trim(),
                 ...(nonEmptyString(req.body.imageUrl) ? { imageUrl: req.body.imageUrl.trim() } : {}),
                 ...(nonEmptyString(req.body.reviews) ? { reviews: req.body.reviews.trim() } : {}),
-                ...(typeof req.body.hasBookmark === "boolean" ? { hasBookmark: req.body.hasBookmark } : {}),
                 date: new Date()
             },
             { new: true }
@@ -230,18 +270,21 @@ router.put("/:id", async (req, res) => {
 
         if (!updated) return res.status(404).json({ error: "Phone not found" });
 
-        const out = updated.toObject({ versionKey: false });
-        out.id = updated.id;
-        delete out._id;
-        out._links = buildItemLinks(updated.id);
-
-        return res.json(out);
+        return res.json({
+            ...updated.toJSON(),
+            _links: {
+                self: { href: itemHref(req, updated.id) },
+                collection: { href: collectionHref(req) }
+            }
+        });
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-// PATCH detail (deels aanpassen)
+// =======================
+// PATCH DETAIL (partial)
+// =======================
 router.patch("/:id", async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
@@ -266,14 +309,6 @@ router.patch("/:id", async (req, res) => {
             if (!nonEmptyString(req.body.imageUrl)) return res.status(400).json({ error: "imageUrl must be non-empty string" });
             update.imageUrl = req.body.imageUrl.trim();
         }
-        if ("reviews" in req.body) {
-            if (!nonEmptyString(req.body.reviews)) return res.status(400).json({ error: "reviews must be non-empty string" });
-            update.reviews = req.body.reviews.trim();
-        }
-        if ("hasBookmark" in req.body) {
-            if (typeof req.body.hasBookmark !== "boolean") return res.status(400).json({ error: "hasBookmark must be boolean" });
-            update.hasBookmark = req.body.hasBookmark;
-        }
 
         if (Object.keys(update).length === 0) {
             return res.status(400).json({ error: "No valid fields to patch" });
@@ -284,18 +319,21 @@ router.patch("/:id", async (req, res) => {
         const updated = await Phone.findByIdAndUpdate(req.params.id, update, { new: true });
         if (!updated) return res.status(404).json({ error: "Phone not found" });
 
-        const out = updated.toObject({ versionKey: false });
-        out.id = updated.id;
-        delete out._id;
-        out._links = buildItemLinks(updated.id);
-
-        return res.json(out);
+        return res.json({
+            ...updated.toJSON(),
+            _links: {
+                self: { href: itemHref(req, updated.id) },
+                collection: { href: collectionHref(req) }
+            }
+        });
     } catch {
         return res.status(400).json({ error: "Invalid id format" });
     }
 });
 
-// DELETE detail
+// =======================
+// DELETE DETAIL
+// =======================
 router.delete("/:id", async (req, res) => {
     try {
         if (!mongoose.isValidObjectId(req.params.id)) {
