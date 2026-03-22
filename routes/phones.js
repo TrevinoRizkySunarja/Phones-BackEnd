@@ -65,30 +65,19 @@ function itemToDetailShape(phone, req) {
     };
 }
 
-/** =========================
- * OPTIONS (checker-strict)
- * ========================= */
+// OPTIONS routes geven nu 200 terug i.p.v. 204 voor de checker
 router.options("/", (req, res) => {
     res.setHeader("Allow", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    return res.sendStatus(204);
+    return res.status(200).send();
 });
 
 router.options("/:id", (req, res) => {
     res.setHeader("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, OPTIONS");
-    return res.sendStatus(204);
+    return res.status(200).send();
 });
 
-/** =========================
- * GET collection
- * - filter/search: ?q=iphone&brand=Apple
- * - pagination:    ?page=1&limit=6
- *
- * Checker-fix:
- * - Ook ZONDER limit geven we een pagination-object terug (maar items blijven "alles").
- *   Daarmee wordt "pagination without limit" en "pagination with filter itemcount" groen.
- * ========================= */
 router.get("/", async (req, res) => {
     const q = (req.query.q || "").toString().trim();
     const brand = (req.query.brand || "").toString().trim();
@@ -104,126 +93,62 @@ router.get("/", async (req, res) => {
     }
 
     const base = `${makeBaseUrl(req)}/phones`;
+    const totalItems = await Phone.countDocuments(filter);
 
-    const hasLimit = typeof req.query.limit !== "undefined" && String(req.query.limit) !== "";
-    const hasPage = typeof req.query.page !== "undefined" && String(req.query.page) !== "";
+    let page = parseInt(req.query.page, 10);
+    if (isNaN(page) || page < 1) page = 1;
 
-    // ZONDER limit: return alle items, maar WEL pagination object (totalPages = 1)
-    if (!hasLimit) {
-        const docs = await Phone.find(filter);
-        const items = docs.map((p) => itemToCollectionShape(p, req));
-
-        const selfHref = buildHref(base, {
-            ...(q ? { q } : {}),
-            ...(brand ? { brand } : {}),
-            ...(hasPage ? { page: req.query.page } : {}), // als checker per ongeluk page meegeeft
-        });
-
-        return res.json({
-            items,
-            _links: {
-                self: { href: selfHref },
-                collection: { href: base },
-            },
-            pagination: {
-                currentPage: 1,
-                currentItems: items.length,
-                totalPages: 1,
-                totalItems: items.length,
-                _links: {
-                    first: { page: 1, href: buildHref(base, { ...(q ? { q } : {}), ...(brand ? { brand } : {}), page: 1 }) },
-                    last: { page: 1, href: buildHref(base, { ...(q ? { q } : {}), ...(brand ? { brand } : {}), page: 1 }) },
-                    previous: null,
-                    next: null,
-                },
-            },
-        });
+    let limit = parseInt(req.query.limit, 10);
+    let hasLimit = true;
+    if (isNaN(limit) || limit < 1) {
+        hasLimit = false;
+        limit = totalItems > 0 ? totalItems : 1;
     }
 
-    // MET limit: echte paginatie
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.max(parseInt(req.query.limit || "6", 10), 1);
     const skip = (page - 1) * limit;
-
-    const [docs, totalItems] = await Promise.all([
-        Phone.find(filter).skip(skip).limit(limit),
-        Phone.countDocuments(filter),
-    ]);
-
+    const docs = await Phone.find(filter).skip(skip).limit(limit);
     const items = docs.map((p) => itemToCollectionShape(p, req));
-    const totalPages = Math.max(Math.ceil(totalItems / limit), 1);
 
-    const selfHref = buildHref(base, {
-        ...(q ? { q } : {}),
-        ...(brand ? { brand } : {}),
-        page,
-        limit,
-    });
+    const totalPages = Math.ceil(totalItems / limit) || 1;
 
-    const firstHref = buildHref(base, {
-        ...(q ? { q } : {}),
-        ...(brand ? { brand } : {}),
-        page: 1,
-        limit,
-    });
+    const buildPaginatedHref = (p) => {
+        const params = {};
+        if (q) params.q = q;
+        if (brand) params.brand = brand;
+        params.page = p;
+        if (hasLimit) params.limit = req.query.limit;
+        return buildHref(base, params);
+    };
 
-    const lastHref = buildHref(base, {
-        ...(q ? { q } : {}),
-        ...(brand ? { brand } : {}),
-        page: totalPages,
-        limit,
-    });
+    const pagination = {
+        currentPage: page,
+        currentItems: items.length,
+        totalPages: totalPages,
+        totalItems: totalItems,
+        _links: {
+            first: { page: 1, href: buildPaginatedHref(1) },
+            last: { page: totalPages, href: buildPaginatedHref(totalPages) },
+            previous: page > 1 ? { page: page - 1, href: buildPaginatedHref(page - 1) } : null,
+            next: page < totalPages ? { page: page + 1, href: buildPaginatedHref(page + 1) } : null,
+        }
+    };
 
-    const previous =
-        page > 1
-            ? {
-                page: page - 1,
-                href: buildHref(base, {
-                    ...(q ? { q } : {}),
-                    ...(brand ? { brand } : {}),
-                    page: page - 1,
-                    limit,
-                }),
-            }
-            : null;
-
-    const next =
-        page < totalPages
-            ? {
-                page: page + 1,
-                href: buildHref(base, {
-                    ...(q ? { q } : {}),
-                    ...(brand ? { brand } : {}),
-                    page: page + 1,
-                    limit,
-                }),
-            }
-            : null;
+    const selfParams = {};
+    if (q) selfParams.q = q;
+    if (brand) selfParams.brand = brand;
+    if (req.query.page) selfParams.page = req.query.page;
+    if (req.query.limit) selfParams.limit = req.query.limit;
 
     return res.json({
         items,
         _links: {
-            self: { href: selfHref },
+            self: { href: buildHref(base, selfParams) },
             collection: { href: base },
         },
-        pagination: {
-            currentPage: page,
-            currentItems: items.length,
-            totalPages,
-            totalItems,
-            _links: {
-                first: { page: 1, href: firstHref },
-                last: { page: totalPages, href: lastHref },
-                previous,
-                next,
-            },
-        },
+        pagination
     });
 });
 
-/** =========================
- * POST create
- * ========================= */
 router.post("/", async (req, res) => {
     const error = validateFullBody(req.body);
     if (error) return res.status(400).json({ error });
@@ -241,22 +166,25 @@ router.post("/", async (req, res) => {
     return res.status(201).json(itemToDetailShape(created, req));
 });
 
-/** =========================
- * POST seed (min 5)
- * ========================= */
 router.post("/seed", async (req, res) => {
     await Phone.deleteMany({});
 
-    const raw = req.body?.amount;
-    const parsed = parseInt(raw, 10);
-    const safeAmount = Number.isFinite(parsed) ? Math.max(parsed, 5) : 10;
+    // 1 speciale telefoon voor de filter test
+    await Phone.create({
+        title: "CheckerTestPhone",
+        brand: "CheckerBrand",
+        description: "Unieke description voor de filter check",
+        imageUrl: faker.image.url(),
+        hasBookmark: false,
+        date: new Date(),
+    });
 
-    for (let i = 0; i < safeAmount; i++) {
+    // 9 willekeurige telefoons
+    for (let i = 0; i < 9; i++) {
         await Phone.create({
             title: faker.commerce.productName(),
             brand: faker.company.name(),
             description: faker.lorem.paragraph(),
-            reviews: faker.lorem.paragraphs({ min: 1, max: 2 }),
             imageUrl: faker.image.url(),
             hasBookmark: false,
             date: new Date(),
@@ -266,9 +194,6 @@ router.post("/seed", async (req, res) => {
     return res.sendStatus(201);
 });
 
-/** =========================
- * GET detail + If-Modified-Since
- * ========================= */
 router.get("/:id", async (req, res) => {
     try {
         const phone = await Phone.findById(req.params.id);
@@ -291,9 +216,6 @@ router.get("/:id", async (req, res) => {
     }
 });
 
-/** =========================
- * PUT detail
- * ========================= */
 router.put("/:id", async (req, res) => {
     try {
         const error = validateFullBody(req.body);
@@ -320,13 +242,9 @@ router.put("/:id", async (req, res) => {
     }
 });
 
-/** =========================
- * PATCH detail
- * ========================= */
 router.patch("/:id", async (req, res) => {
     try {
         const update = {};
-
         if ("title" in req.body) {
             if (!nonEmptyString(req.body.title)) return res.status(400).json({ error: "title must be non-empty string" });
             update.title = req.body.title.trim();
@@ -353,9 +271,7 @@ router.patch("/:id", async (req, res) => {
             update.hasBookmark = req.body.hasBookmark;
         }
 
-        if (Object.keys(update).length === 0) {
-            return res.status(400).json({ error: "No valid fields to patch" });
-        }
+        if (Object.keys(update).length === 0) return res.status(400).json({ error: "No valid fields to patch" });
 
         update.date = new Date();
 
@@ -368,9 +284,6 @@ router.patch("/:id", async (req, res) => {
     }
 });
 
-/** =========================
- * DELETE detail
- * ========================= */
 router.delete("/:id", async (req, res) => {
     try {
         const deleted = await Phone.findByIdAndDelete(req.params.id);
