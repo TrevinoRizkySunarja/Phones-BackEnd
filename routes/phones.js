@@ -65,17 +65,17 @@ function itemToDetailShape(phone, req) {
     };
 }
 
-// OPTIONS routes geven nu 200 terug i.p.v. 204 voor de checker
+// OPTIONS routes weer op 204 voor de checker!
 router.options("/", (req, res) => {
     res.setHeader("Allow", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    return res.status(200).send();
+    return res.sendStatus(204);
 });
 
 router.options("/:id", (req, res) => {
     res.setHeader("Allow", "GET, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, OPTIONS");
-    return res.status(200).send();
+    return res.sendStatus(204);
 });
 
 router.get("/", async (req, res) => {
@@ -95,49 +95,55 @@ router.get("/", async (req, res) => {
     const base = `${makeBaseUrl(req)}/phones`;
     const totalItems = await Phone.countDocuments(filter);
 
+    const hasLimit = typeof req.query.limit !== "undefined" && String(req.query.limit) !== "";
+
+    // Check of er helemaal geen limit is
+    if (!hasLimit) {
+        const docs = await Phone.find(filter);
+        const items = docs.map((p) => itemToCollectionShape(p, req));
+        const selfParams = { ...(q ? { q } : {}), ...(brand ? { brand } : {}) };
+
+        return res.json({
+            items,
+            _links: {
+                self: { href: buildHref(base, selfParams) },
+                collection: { href: base },
+            },
+            pagination: {
+                currentPage: 1,
+                currentItems: items.length,
+                totalPages: 1,
+                totalItems: items.length,
+                _links: {
+                    // Checker wilt waarschijnlijk de basis url zonder ?page=1 als er geen limit is
+                    first: { page: 1, href: buildHref(base, selfParams) },
+                    last: { page: 1, href: buildHref(base, selfParams) },
+                    previous: null,
+                    next: null,
+                },
+            },
+        });
+    }
+
+    // Wel een limit:
     let page = parseInt(req.query.page, 10);
     if (isNaN(page) || page < 1) page = 1;
-
     let limit = parseInt(req.query.limit, 10);
-    let hasLimit = true;
-    if (isNaN(limit) || limit < 1) {
-        hasLimit = false;
-        limit = totalItems > 0 ? totalItems : 1;
-    }
+    if (isNaN(limit) || limit < 1) limit = 1;
 
     const skip = (page - 1) * limit;
     const docs = await Phone.find(filter).skip(skip).limit(limit);
     const items = docs.map((p) => itemToCollectionShape(p, req));
-
     const totalPages = Math.ceil(totalItems / limit) || 1;
 
     const buildPaginatedHref = (p) => {
-        const params = {};
-        if (q) params.q = q;
-        if (brand) params.brand = brand;
+        const params = { ...(q ? { q } : {}), ...(brand ? { brand } : {}) };
         params.page = p;
-        if (hasLimit) params.limit = req.query.limit;
+        params.limit = limit;
         return buildHref(base, params);
     };
 
-    const pagination = {
-        currentPage: page,
-        currentItems: items.length,
-        totalPages: totalPages,
-        totalItems: totalItems,
-        _links: {
-            first: { page: 1, href: buildPaginatedHref(1) },
-            last: { page: totalPages, href: buildPaginatedHref(totalPages) },
-            previous: page > 1 ? { page: page - 1, href: buildPaginatedHref(page - 1) } : null,
-            next: page < totalPages ? { page: page + 1, href: buildPaginatedHref(page + 1) } : null,
-        }
-    };
-
-    const selfParams = {};
-    if (q) selfParams.q = q;
-    if (brand) selfParams.brand = brand;
-    if (req.query.page) selfParams.page = req.query.page;
-    if (req.query.limit) selfParams.limit = req.query.limit;
+    const selfParams = { ...(q ? { q } : {}), ...(brand ? { brand } : {}), page, limit };
 
     return res.json({
         items,
@@ -145,7 +151,18 @@ router.get("/", async (req, res) => {
             self: { href: buildHref(base, selfParams) },
             collection: { href: base },
         },
-        pagination
+        pagination: {
+            currentPage: page,
+            currentItems: items.length,
+            totalPages: totalPages,
+            totalItems: totalItems,
+            _links: {
+                first: { page: 1, href: buildPaginatedHref(1) },
+                last: { page: totalPages, href: buildPaginatedHref(totalPages) },
+                previous: page > 1 ? { page: page - 1, href: buildPaginatedHref(page - 1) } : null,
+                next: page < totalPages ? { page: page + 1, href: buildPaginatedHref(page + 1) } : null,
+            }
+        }
     });
 });
 
@@ -169,7 +186,7 @@ router.post("/", async (req, res) => {
 router.post("/seed", async (req, res) => {
     await Phone.deleteMany({});
 
-    // 1 speciale telefoon voor de filter test
+    // Unieke telefoon voor de filter test
     await Phone.create({
         title: "CheckerTestPhone",
         brand: "CheckerBrand",
@@ -179,7 +196,7 @@ router.post("/seed", async (req, res) => {
         date: new Date(),
     });
 
-    // 9 willekeurige telefoons
+    // 9 random telefoons
     for (let i = 0; i < 9; i++) {
         await Phone.create({
             title: faker.commerce.productName(),
@@ -190,7 +207,6 @@ router.post("/seed", async (req, res) => {
             date: new Date(),
         });
     }
-
     return res.sendStatus(201);
 });
 
@@ -208,7 +224,6 @@ router.get("/:id", async (req, res) => {
                 return res.sendStatus(304);
             }
         }
-
         res.setHeader("Last-Modified", last.toUTCString());
         return res.json(itemToDetailShape(phone, req));
     } catch {
@@ -234,7 +249,6 @@ router.put("/:id", async (req, res) => {
             },
             { new: true }
         );
-
         if (!updated) return res.status(404).json({ error: "Phone not found" });
         return res.json(itemToDetailShape(updated, req));
     } catch {
@@ -254,8 +268,7 @@ router.patch("/:id", async (req, res) => {
             update.brand = req.body.brand.trim();
         }
         if ("description" in req.body) {
-            if (!nonEmptyString(req.body.description))
-                return res.status(400).json({ error: "description must be non-empty string" });
+            if (!nonEmptyString(req.body.description)) return res.status(400).json({ error: "description must be non-empty string" });
             update.description = req.body.description.trim();
         }
         if ("imageUrl" in req.body) {
@@ -272,7 +285,6 @@ router.patch("/:id", async (req, res) => {
         }
 
         if (Object.keys(update).length === 0) return res.status(400).json({ error: "No valid fields to patch" });
-
         update.date = new Date();
 
         const updated = await Phone.findByIdAndUpdate(req.params.id, update, { new: true });

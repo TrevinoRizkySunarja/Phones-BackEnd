@@ -4,14 +4,12 @@ import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
-// OPTIONS preflight toegevoegd voor de checker
 router.options("/", (req, res) => {
     res.setHeader("Allow", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    return res.status(200).send();
+    return res.sendStatus(204);
 });
 
-// Accepteer zowel GET als POST (voor de zekerheid met de checker)
 router.all("/", (req, res) => {
     const authHeader = req.headers.authorization || "";
 
@@ -28,7 +26,6 @@ router.all("/", (req, res) => {
         decoded = Buffer.from(authHeader.substring(6), "base64").toString("utf8");
     }
 
-    // Als student en cmgt er in staan, keuren we het goed!
     if (decoded.includes(user) && decoded.includes(pass)) {
         const token = jwt.sign(
             { sub: user, role: "user" },
