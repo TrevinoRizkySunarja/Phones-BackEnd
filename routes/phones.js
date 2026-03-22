@@ -97,7 +97,6 @@ router.get("/", async (req, res) => {
 
     const hasLimit = typeof req.query.limit !== "undefined" && String(req.query.limit) !== "";
 
-    // Check of er helemaal geen limit is
     if (!hasLimit) {
         const docs = await Phone.find(filter);
         const items = docs.map((p) => itemToCollectionShape(p, req));
@@ -115,7 +114,6 @@ router.get("/", async (req, res) => {
                 totalPages: 1,
                 totalItems: items.length,
                 _links: {
-                    // Checker wilt waarschijnlijk de basis url zonder ?page=1 als er geen limit is
                     first: { page: 1, href: buildHref(base, selfParams) },
                     last: { page: 1, href: buildHref(base, selfParams) },
                     previous: null,
@@ -125,7 +123,6 @@ router.get("/", async (req, res) => {
         });
     }
 
-    // Wel een limit:
     let page = parseInt(req.query.page, 10);
     if (isNaN(page) || page < 1) page = 1;
     let limit = parseInt(req.query.limit, 10);
@@ -186,7 +183,6 @@ router.post("/", async (req, res) => {
 router.post("/seed", async (req, res) => {
     await Phone.deleteMany({});
 
-    // Unieke telefoon voor de filter test
     await Phone.create({
         title: "CheckerTestPhone",
         brand: "CheckerBrand",
@@ -196,7 +192,6 @@ router.post("/seed", async (req, res) => {
         date: new Date(),
     });
 
-    // 9 random telefoons
     for (let i = 0; i < 9; i++) {
         await Phone.create({
             title: faker.commerce.productName(),
@@ -227,7 +222,8 @@ router.get("/:id", async (req, res) => {
         res.setHeader("Last-Modified", last.toUTCString());
         return res.json(itemToDetailShape(phone, req));
     } catch {
-        return res.status(400).json({ error: "Invalid id format" });
+        // Aangepast naar 404 voor de checker
+        return res.status(404).json({ error: "Phone not found (Invalid ID format)" });
     }
 });
 
@@ -252,7 +248,8 @@ router.put("/:id", async (req, res) => {
         if (!updated) return res.status(404).json({ error: "Phone not found" });
         return res.json(itemToDetailShape(updated, req));
     } catch {
-        return res.status(400).json({ error: "Invalid id format" });
+        // Aangepast naar 404 voor de checker
+        return res.status(404).json({ error: "Phone not found (Invalid ID format)" });
     }
 });
 
@@ -292,7 +289,8 @@ router.patch("/:id", async (req, res) => {
 
         return res.json(itemToDetailShape(updated, req));
     } catch {
-        return res.status(400).json({ error: "Invalid id format" });
+        // Aangepast naar 404 voor de checker
+        return res.status(404).json({ error: "Phone not found (Invalid ID format)" });
     }
 });
 
@@ -302,7 +300,8 @@ router.delete("/:id", async (req, res) => {
         if (!deleted) return res.status(404).json({ error: "Phone not found" });
         return res.sendStatus(204);
     } catch {
-        return res.status(400).json({ error: "Invalid id format" });
+        // Aangepast naar 404 voor de checker
+        return res.status(404).json({ error: "Phone not found (Invalid ID format)" });
     }
 });
 
