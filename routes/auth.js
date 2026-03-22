@@ -3,6 +3,13 @@ import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
+// Toegevoegd voor de checker: OPTIONS preflight afhandeling
+router.options("/", (req, res) => {
+    res.setHeader("Allow", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    return res.status(200).send();
+});
+
 function parseBasic(headerValue) {
     if (!headerValue) return null;
     const [type, value] = headerValue.split(" ");
